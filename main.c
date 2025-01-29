@@ -1,3 +1,4 @@
+#include "vulkan/vk_platform.h"
 #include "vulkan/vulkan_core.h"
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
@@ -15,6 +16,12 @@
 const uint32_t HEIGHT = 600;
 const uint32_t WIDTH = 800;
 
+#ifdef DEBUG
+bool enable_validation_layers = true;
+#else
+bool enable_validation_layers = false;
+#endif
+
 #define error(...)                                                             \
   {                                                                            \
     char out[4096];                                                            \
@@ -27,6 +34,7 @@ const uint32_t WIDTH = 800;
 typedef struct {
   GLFWwindow *window;
   VkInstance instance;
+  VkDebugUtilsMessengerEXT debug_messenger;
 } app_t;
 
 typedef struct {
@@ -34,6 +42,21 @@ typedef struct {
   size_t count;
   size_t capacity;
 } extension_names_da_t;
+
+typedef struct {
+  VkExtensionProperties *items;
+  uint32_t count;
+  uint32_t capacity;
+} extension_properties_da_t;
+
+VKAPI_ATTR VkBool32 VKAPI_CALL
+debug_callback(VkDebugUtilsMessageSeverityFlagBitsEXT message_severity,
+               VkDebugUtilsMessageTypeFlagsEXT message_type,
+               const VkDebugUtilsMessengerCallbackDataEXT *callback_data,
+               void *user_data) {
+  printf("validation layer: %s\n", callback_data->pMessage);
+  return VK_FALSE;
+}
 
 bool check_validation_layer_support(const char **validation_layers,
                                     uint32_t validation_layers_len,
@@ -63,6 +86,96 @@ bool check_validation_layer_support(const char **validation_layers,
   return true;
 }
 
+extension_names_da_t get_required_extensions() {
+  extension_names_da_t required_extensions = {0};
+
+  uint32_t glfw_required_extension_count = 0;
+  const char **glfw_extensions =
+      glfwGetRequiredInstanceExtensions(&glfw_required_extension_count);
+
+  for (uint32_t i = 0; i < glfw_required_extension_count; i++) {
+    da_append(required_extensions, glfw_extensions[i]);
+  }
+
+  da_append(required_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+
+  if (enable_validation_layers) {
+    da_append(required_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+  }
+
+  return required_extensions;
+}
+
+extension_properties_da_t get_available_extensions() {
+  extension_properties_da_t available_extensions = {0};
+
+  vkEnumerateInstanceExtensionProperties(NULL, &available_extensions.count,
+                                         NULL);
+
+  da_capacity(available_extensions, available_extensions.count);
+
+  vkEnumerateInstanceExtensionProperties(NULL, &available_extensions.count,
+                                         available_extensions.items);
+
+  return available_extensions;
+}
+
+VkResult create_debug_utils_messenger_ext(
+    VkInstance instance, const VkDebugUtilsMessengerCreateInfoEXT *create_info,
+    const VkAllocationCallbacks *allocator,
+    VkDebugUtilsMessengerEXT *debug_messenger) {
+  PFN_vkCreateDebugUtilsMessengerEXT func =
+      (PFN_vkCreateDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+          instance, "vkCreateDebugUtilsMessengerEXT");
+  if (func != NULL) {
+    return func(instance, create_info, allocator, debug_messenger);
+  } else {
+    return VK_ERROR_EXTENSION_NOT_PRESENT;
+  }
+}
+
+void destroy_debug_utils_messenger_ext(VkInstance instance,
+                                       VkDebugUtilsMessengerEXT debug_messenger,
+                                       const VkAllocationCallbacks *allocator) {
+  PFN_vkDestroyDebugUtilsMessengerEXT func =
+      (PFN_vkDestroyDebugUtilsMessengerEXT)vkGetInstanceProcAddr(
+          instance, "vkDestroyDebugUtilsMessengerEXT");
+  if (func != NULL) {
+    func(instance, debug_messenger, allocator);
+  }
+}
+
+void populate_debug_messenger_create_info(
+    VkDebugUtilsMessengerCreateInfoEXT *create_info) {
+  *create_info = (VkDebugUtilsMessengerCreateInfoEXT){0};
+
+  create_info->sType = VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT;
+  create_info->messageSeverity =
+      VK_DEBUG_UTILS_MESSAGE_SEVERITY_VERBOSE_BIT_EXT |
+      VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT |
+      /*VK_DEBUG_UTILS_MESSAGE_SEVERITY_INFO_BIT_EXT |*/
+      VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
+  create_info->messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_PERFORMANCE_BIT_EXT |
+                             VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT;
+  create_info->pfnUserCallback = debug_callback;
+  create_info->pUserData = NULL;
+}
+
+void setup_debug_messenger(app_t *app) {
+  if (!enable_validation_layers) {
+    return;
+  }
+
+  VkDebugUtilsMessengerCreateInfoEXT create_info;
+  populate_debug_messenger_create_info(&create_info);
+
+  if (create_debug_utils_messenger_ext(app->instance, &create_info, NULL,
+                                       &app->debug_messenger) != VK_SUCCESS) {
+    error("failed to set up debug messenger!\n");
+  }
+}
+
 void create_instance(app_t *app) {
   VkApplicationInfo app_info = {0};
   app_info.sType = VK_STRUCTURE_TYPE_APPLICATION_INFO;
@@ -72,36 +185,13 @@ void create_instance(app_t *app) {
   app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
   app_info.apiVersion = VK_API_VERSION_1_0;
 
-  uint32_t glfw_required_extension_count = 0;
-  const char **glfw_extensions =
-      glfwGetRequiredInstanceExtensions(&glfw_required_extension_count);
-
-  extension_names_da_t required_extensions = {0};
-  for (uint32_t i = 0; i < glfw_required_extension_count; i++) {
-    da_append(required_extensions, glfw_extensions[i]);
-  }
-  da_append(required_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
-
-  // TODO(2025-01-29, Max Bolotin): Why is glfwAvailableExtensionsCount always
-  // 0?
-  uint32_t glfw_available_extensions_count = 0;
-  vkEnumerateInstanceExtensionProperties(NULL, &glfw_available_extensions_count,
-                                         NULL);
-
-  VkExtensionProperties glfw_available_extensions[1024];
-  vkEnumerateInstanceExtensionProperties(NULL, &glfw_available_extensions_count,
-                                         glfw_available_extensions);
+  extension_names_da_t required_extensions = get_required_extensions();
+  extension_properties_da_t available_extensions = get_available_extensions();
 
   printf("Vulkan extensions support:\n");
-  for (uint32_t i = 0; i < glfw_available_extensions_count; i++) {
-    printf("  %s\n", glfw_available_extensions[i].extensionName);
+  for (uint32_t i = 0; i < available_extensions.count; i++) {
+    printf("  %s\n", available_extensions.items[i].extensionName);
   }
-
-#ifdef DEBUG
-  bool enable_validation_layers = true;
-#else
-  bool enable_validation_layers = false;
-#endif
 
   const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
 
@@ -120,19 +210,23 @@ void create_instance(app_t *app) {
   create_info.ppEnabledExtensionNames = required_extensions.items;
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
 
+  VkDebugUtilsMessengerCreateInfoEXT debug_create_info;
   if (enable_validation_layers) {
     create_info.enabledLayerCount =
         sizeof(validation_layers) / sizeof(const char *);
     create_info.ppEnabledLayerNames = validation_layers;
+
+    populate_debug_messenger_create_info(&debug_create_info);
+    create_info.pNext = &debug_create_info;
   } else {
     create_info.enabledLayerCount = 0;
+    create_info.pNext = NULL;
   }
 
   VkResult result =
       vkCreateInstance(&create_info, NULL, &app->instance) != VK_SUCCESS;
 
   if (result != VK_SUCCESS) {
-    printf("result: %d\n", result);
     error("failed to create vulkan instance!");
   }
 }
@@ -147,7 +241,10 @@ void init_window(app_t *app) {
   app->window = glfwCreateWindow(WIDTH, HEIGHT, "Vulkan", NULL, NULL);
 }
 
-void init_vulkan(app_t *app) { create_instance(app); }
+void init_vulkan(app_t *app) {
+  create_instance(app);
+  setup_debug_messenger(app);
+}
 
 void main_loop(app_t *app) {
   while (!glfwWindowShouldClose(app->window)) {
@@ -156,6 +253,11 @@ void main_loop(app_t *app) {
 }
 
 void cleanup(app_t *app) {
+  if (enable_validation_layers) {
+    destroy_debug_utils_messenger_ext(app->instance, app->debug_messenger,
+                                      NULL);
+  }
+
   vkDestroyInstance(app->instance, NULL);
   glfwDestroyWindow(app->window);
   glfwTerminate();
