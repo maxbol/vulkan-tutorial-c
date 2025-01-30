@@ -50,6 +50,24 @@
     xs.items[j] = tmp;                                                         \
   } while (0)
 
+#define da_remove_swap(xs, i)                                                  \
+  do {                                                                         \
+    assert(xs.count > 0);                                                      \
+    assert(i < xs.count);                                                      \
+    da_swap(xs, i, xs.count - 1);                                              \
+    xs.count -= 1;                                                             \
+  } while (0)
+
+#define da_remove_shuffle(xs, i)                                               \
+  do {                                                                         \
+    assert(xs.count > 0);                                                      \
+    assert(i < xs.count);                                                      \
+    for (size_t i = 0; i < xs.count - 1; i++) {                                \
+      xs.items[i] = xs.items[i + 1];                                           \
+    }                                                                          \
+    xs.count -= 1;                                                             \
+  } while (0)
+
 #define da_clone(xs)                                                           \
   ({                                                                           \
     typeof(xs) ys = {0};                                                       \

@@ -24,6 +24,7 @@ const uint32_t HEIGHT = 600;
 const uint32_t WIDTH = 800;
 
 const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
+const char *device_extensions[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 #ifdef DEBUG
 bool enable_validation_layers = true;
 #else
@@ -46,7 +47,21 @@ typedef struct {
   VkPhysicalDevice physical_device;
   VkDevice device;
   VkQueue graphics_queue;
+  VkQueue present_queue;
+  VkSurfaceKHR surface;
 } app_t;
+
+typedef struct {
+  const char **items;
+  size_t count;
+  size_t capacity;
+} const_strings_da_t;
+
+typedef struct {
+  uint32_t *items;
+  size_t count;
+  size_t capacity;
+} uint32_da_t;
 
 typedef optional(uint32_t) optional_uint32_t;
 
@@ -152,19 +167,13 @@ void setup_debug_messenger(app_t *app) {
  ************/
 
 typedef struct {
-  const char **items;
-  size_t count;
-  size_t capacity;
-} extension_names_da_t;
-
-typedef struct {
   VkExtensionProperties *items;
   uint32_t count;
   uint32_t capacity;
 } extension_properties_da_t;
 
-extension_names_da_t get_required_extensions() {
-  extension_names_da_t required_extensions = {0};
+const_strings_da_t get_required_instance_extensions() {
+  const_strings_da_t required_extensions = {0};
 
   uint32_t glfw_required_extension_count = 0;
   const char **glfw_extensions =
@@ -177,6 +186,8 @@ extension_names_da_t get_required_extensions() {
   da_append(required_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
   da_append(required_extensions,
             VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
+  da_append(required_extensions, VK_KHR_SURFACE_EXTENSION_NAME);
+  da_append(required_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
   if (enable_validation_layers) {
     da_append(required_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -185,7 +196,7 @@ extension_names_da_t get_required_extensions() {
   return required_extensions;
 }
 
-extension_properties_da_t get_available_extensions() {
+extension_properties_da_t get_available_instance_extensions() {
   extension_properties_da_t available_extensions = {0};
 
   vkEnumerateInstanceExtensionProperties(NULL, &available_extensions.count,
@@ -205,6 +216,7 @@ extension_properties_da_t get_available_extensions() {
 
 typedef struct {
   optional_uint32_t graphics_family;
+  optional_uint32_t present_family;
 } queue_family_indices_t;
 
 typedef struct {
@@ -213,17 +225,17 @@ typedef struct {
   uint32_t capacity;
 } queue_family_properties_da_t;
 
-bool indices_is_complete(queue_family_indices_t indices) {
-  return indices.graphics_family.present;
+bool indices_complete(queue_family_indices_t indices) {
+  return indices.graphics_family.present && indices.present_family.present;
 }
 
-queue_family_indices_t find_queue_families(VkPhysicalDevice device) {
+queue_family_indices_t find_queue_families(app_t *app,
+                                           VkPhysicalDevice device) {
   queue_family_indices_t indices = {0};
   queue_family_properties_da_t queue_families = {0};
 
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families.count, NULL);
   da_capacity(queue_families, queue_families.count);
-
   vkGetPhysicalDeviceQueueFamilyProperties(device, &queue_families.count,
                                            queue_families.items);
 
@@ -233,12 +245,70 @@ queue_family_indices_t find_queue_families(VkPhysicalDevice device) {
           (optional_uint32_t){.present = true, .value = i};
     }
 
-    if (indices_is_complete(indices)) {
+    VkBool32 present_support = false;
+    vkGetPhysicalDeviceSurfaceSupportKHR(device, i, app->surface,
+                                         &present_support);
+    if (present_support) {
+      indices.present_family = (optional_uint32_t){.present = true, .value = i};
+    }
+
+    if (indices_complete(indices)) {
       break;
     }
   }
 
   return indices;
+}
+
+/***********
+ * Swapchain
+ ***********/
+
+typedef struct {
+  VkSurfaceFormatKHR *items;
+  uint32_t count;
+  uint32_t capacity;
+} surface_formats_da_t;
+
+typedef struct {
+  VkPresentModeKHR *items;
+  uint32_t count;
+  uint32_t capacity;
+} present_modes_da_t;
+
+typedef struct {
+  VkSurfaceCapabilitiesKHR capabilites;
+  surface_formats_da_t formats;
+  present_modes_da_t present_modes;
+} swapchain_support_details_t;
+
+swapchain_support_details_t query_swap_chain_support(app_t *app,
+                                                     VkPhysicalDevice device) {
+  swapchain_support_details_t details = {0};
+
+  vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, app->surface,
+                                            &details.capabilites);
+
+  vkGetPhysicalDeviceSurfaceFormatsKHR(device, app->surface,
+                                       &details.formats.count, NULL);
+
+  if (details.formats.count != 0) {
+    da_capacity(details.formats, details.formats.count);
+    vkGetPhysicalDeviceSurfaceFormatsKHR(
+        device, app->surface, &details.formats.count, details.formats.items);
+  }
+
+  vkGetPhysicalDeviceSurfacePresentModesKHR(device, app->surface,
+                                            &details.present_modes.count, NULL);
+
+  if (details.present_modes.count != 0) {
+    da_capacity(details.present_modes, details.present_modes.count);
+    vkGetPhysicalDeviceSurfacePresentModesKHR(device, app->surface,
+                                              &details.present_modes.count,
+                                              details.present_modes.items);
+  }
+
+  return details;
 }
 
 /******************
@@ -262,22 +332,30 @@ typedef struct {
   uint32_t capacity;
 } physical_devices_scored_da_t;
 
-bool is_device_suitable(VkPhysicalDevice device) {
-  VkPhysicalDeviceProperties device_properties;
-  VkPhysicalDeviceFeatures device_features;
+bool check_device_extension_support(VkPhysicalDevice device) {
+  extension_properties_da_t available_extensions = {0};
+  vkEnumerateDeviceExtensionProperties(device, NULL,
+                                       &available_extensions.count, NULL);
+  da_capacity(available_extensions, available_extensions.count);
+  vkEnumerateDeviceExtensionProperties(
+      device, NULL, &available_extensions.count, available_extensions.items);
 
-  vkGetPhysicalDeviceProperties(device, &device_properties);
-  vkGetPhysicalDeviceFeatures(device, &device_features);
+  const_strings_da_t required_extensions = {0};
 
-  printf("Testing physical device %s (%d) of type %d\n",
-         device_properties.deviceName, device_properties.deviceID,
-         device_properties.deviceType);
+  for (uint32_t i = 0; i < sizeof(device_extensions) / sizeof(const char *);
+       i++) {
+    for (uint32_t j = 0; j < required_extensions.count; j++) {
+      if (strcmp(required_extensions.items[j], device_extensions[i]) == 0) {
+        da_remove_shuffle(required_extensions, j);
+        break;
+      }
+    }
+  }
 
-  return device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU ||
-         device_properties.deviceType == VK_PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU;
+  return required_extensions.count == 0;
 }
 
-int rate_device_suitability(VkPhysicalDevice device) {
+int rate_device_suitability(app_t *app, VkPhysicalDevice device) {
   VkPhysicalDeviceProperties device_properties;
   VkPhysicalDeviceFeatures device_features;
 
@@ -296,10 +374,18 @@ int rate_device_suitability(VkPhysicalDevice device) {
     score += 100;
   }
 
-  queue_family_indices_t indices = find_queue_families(device);
+  queue_family_indices_t indices = find_queue_families(app, device);
 
-  if (!indices_is_complete(indices)) {
-    score = 0;
+  if (!indices_complete(indices) || !check_device_extension_support(device)) {
+    return 0;
+  }
+
+  swapchain_support_details_t swap_chain_support =
+      query_swap_chain_support(app, device);
+
+  if (swap_chain_support.formats.count == 0 ||
+      swap_chain_support.present_modes.count == 0) {
+    return 0;
   }
 
   return score;
@@ -327,7 +413,7 @@ void pick_physical_device(app_t *app) {
   for (uint32_t i = 0; i < devices.count; i++) {
     VkPhysicalDevice device = devices.items[i];
     physical_device_scored_t candidate = {
-        .score = rate_device_suitability(device),
+        .score = rate_device_suitability(app, device),
         .device = device,
     };
     da_append(candidates, candidate);
@@ -348,29 +434,55 @@ void pick_physical_device(app_t *app) {
  * Logical devices
  *****************/
 
+typedef struct {
+  VkDeviceQueueCreateInfo *items;
+  uint32_t capacity;
+  uint32_t count;
+} device_queue_create_infos_da_t;
+
 void create_logical_device(app_t *app) {
-  queue_family_indices_t indices = find_queue_families(app->physical_device);
+  queue_family_indices_t indices =
+      find_queue_families(app, app->physical_device);
 
-  assert(indices_is_complete(indices));
+  assert(indices_complete(indices));
 
-  VkDeviceQueueCreateInfo queue_create_info = {0};
-  queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-  queue_create_info.queueFamilyIndex = indices.graphics_family.value;
-  queue_create_info.queueCount = 1;
+  device_queue_create_infos_da_t queue_create_infos = {0};
+  uint32_da_t unique_queue_families = {0};
+  da_append(unique_queue_families, indices.graphics_family.value);
 
+  if (indices.graphics_family.value != indices.present_family.value) {
+    da_append(unique_queue_families, indices.present_family.value);
+  }
+
+  da_capacity(queue_create_infos, unique_queue_families.count);
   float queue_priority = 1.0f;
-  queue_create_info.pQueuePriorities = &queue_priority;
+
+  for (uint32_t i = 0; i < unique_queue_families.count; i++) {
+    VkDeviceQueueCreateInfo queue_create_info = {0};
+    queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+    queue_create_info.queueFamilyIndex = unique_queue_families.items[i];
+    queue_create_info.queueCount = 1;
+    queue_create_info.pQueuePriorities = &queue_priority;
+    da_append(queue_create_infos, queue_create_info);
+  }
 
   VkPhysicalDeviceFeatures device_features = {0};
 
+  const_strings_da_t enabled_extensions = {0};
+  da_append(enabled_extensions, "VK_KHR_portability_subset");
+
+  for (uint32_t i = 0; i < sizeof(device_extensions) / sizeof(const char *);
+       i++) {
+    da_append(enabled_extensions, device_extensions[i]);
+  }
+
   VkDeviceCreateInfo create_info = {0};
   create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
-  create_info.pQueueCreateInfos = &queue_create_info;
-  create_info.queueCreateInfoCount = 1;
+  create_info.pQueueCreateInfos = queue_create_infos.items;
+  create_info.queueCreateInfoCount = queue_create_infos.count;
   create_info.pEnabledFeatures = &device_features;
-  create_info.enabledExtensionCount = 1;
-  create_info.ppEnabledExtensionNames =
-      (const char *[]){"VK_KHR_portability_subset"};
+  create_info.enabledExtensionCount = enabled_extensions.count;
+  create_info.ppEnabledExtensionNames = enabled_extensions.items;
 
   // Redundant in modern vulkan, defined for backwards-compatibility
   if (enable_validation_layers) {
@@ -388,6 +500,8 @@ void create_logical_device(app_t *app) {
 
   vkGetDeviceQueue(app->device, indices.graphics_family.value, 0,
                    &app->graphics_queue);
+  vkGetDeviceQueue(app->device, indices.present_family.value, 0,
+                   &app->present_queue);
 }
 
 /**********
@@ -403,8 +517,9 @@ void create_instance(app_t *app) {
   app_info.engineVersion = VK_MAKE_VERSION(1, 0, 0);
   app_info.apiVersion = VK_API_VERSION_1_0;
 
-  extension_names_da_t required_extensions = get_required_extensions();
-  extension_properties_da_t available_extensions = get_available_extensions();
+  const_strings_da_t required_extensions = get_required_instance_extensions();
+  extension_properties_da_t available_extensions =
+      get_available_instance_extensions();
 
   printf("Vulkan extensions support:\n");
   for (uint32_t i = 0; i < available_extensions.count; i++) {
@@ -448,6 +563,18 @@ void create_instance(app_t *app) {
 }
 
 /************
+ * Surface
+ ************/
+
+void create_surface(app_t *app) {
+  uint32_t result =
+      glfwCreateWindowSurface(app->instance, app->window, NULL, &app->surface);
+  if (result != VK_SUCCESS) {
+    error("failed to create window surface with status %d\n", result);
+  }
+}
+
+/************
  * Main hooks
  ************/
 
@@ -464,6 +591,7 @@ void init_window(app_t *app) {
 void init_vulkan(app_t *app) {
   create_instance(app);
   setup_debug_messenger(app);
+  create_surface(app);
   pick_physical_device(app);
   create_logical_device(app);
 }
@@ -482,6 +610,7 @@ void cleanup(app_t *app) {
                                       NULL);
   }
 
+  vkDestroySurfaceKHR(app->instance, app->surface, NULL);
   vkDestroyInstance(app->instance, NULL);
   glfwDestroyWindow(app->window);
   glfwTerminate();

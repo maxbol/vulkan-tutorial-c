@@ -20,16 +20,22 @@
   in {
     devShells = with pkgs; {
       default = mkShell {
-        buildInputs = [
+        buildInputs = let
+          glfw-vulkan-macos-fix = glfw.overrideAttrs (oldAttrs: {
+            env = {
+              NIX_CFLAGS_COMPILE = toString [
+                "-D_GLFW_VULKAN_LIBRARY=\"${lib.getLib vulkan-loader}/lib/libvulkan.1.dylib\""
+              ];
+            };
+          });
+        in [
           vulkan-headers
           vulkan-loader
           vulkan-validation-layers
           moltenvk
-
           vulkan-tools
-          # vulkan-tools-lunarg
           vulkan-utility-libraries
-          glfw
+          glfw-vulkan-macos-fix
           cglm
         ];
 
