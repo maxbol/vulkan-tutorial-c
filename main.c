@@ -1,5 +1,6 @@
 #include "vulkan/vk_platform.h"
 #include "vulkan/vulkan_core.h"
+#include <assert.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -22,6 +23,7 @@
 const uint32_t HEIGHT = 600;
 const uint32_t WIDTH = 800;
 
+const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
 #ifdef DEBUG
 bool enable_validation_layers = true;
 #else
@@ -42,36 +44,9 @@ typedef struct {
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
   VkPhysicalDevice physical_device;
+  VkDevice device;
+  VkQueue graphics_queue;
 } app_t;
-
-typedef struct {
-  const char **items;
-  size_t count;
-  size_t capacity;
-} extension_names_da_t;
-
-typedef struct {
-  VkExtensionProperties *items;
-  uint32_t count;
-  uint32_t capacity;
-} extension_properties_da_t;
-
-typedef struct {
-  int score;
-  VkPhysicalDevice device;
-} physical_device_scored_t;
-
-typedef struct {
-  VkPhysicalDevice *items;
-  uint32_t count;
-  uint32_t capacity;
-} physical_devices_da_t;
-
-typedef struct {
-  physical_device_scored_t *items;
-  uint32_t count;
-  uint32_t capacity;
-} physical_devices_scored_da_t;
 
 typedef optional(uint32_t) optional_uint32_t;
 
@@ -176,6 +151,18 @@ void setup_debug_messenger(app_t *app) {
  * Extensions
  ************/
 
+typedef struct {
+  const char **items;
+  size_t count;
+  size_t capacity;
+} extension_names_da_t;
+
+typedef struct {
+  VkExtensionProperties *items;
+  uint32_t count;
+  uint32_t capacity;
+} extension_properties_da_t;
+
 extension_names_da_t get_required_extensions() {
   extension_names_da_t required_extensions = {0};
 
@@ -255,6 +242,23 @@ queue_family_indices_t find_queue_families(VkPhysicalDevice device) {
 /******************
  * Physical devices
  ******************/
+
+typedef struct {
+  int score;
+  VkPhysicalDevice device;
+} physical_device_scored_t;
+
+typedef struct {
+  VkPhysicalDevice *items;
+  uint32_t count;
+  uint32_t capacity;
+} physical_devices_da_t;
+
+typedef struct {
+  physical_device_scored_t *items;
+  uint32_t count;
+  uint32_t capacity;
+} physical_devices_scored_da_t;
 
 bool is_device_suitable(VkPhysicalDevice device) {
   VkPhysicalDeviceProperties device_properties;
@@ -338,6 +342,50 @@ void pick_physical_device(app_t *app) {
   }
 }
 
+/*****************
+ * Logical devices
+ *****************/
+
+void create_logical_device(app_t *app) {
+  queue_family_indices_t indices = find_queue_families(app->physical_device);
+
+  assert(indices_is_complete(indices));
+
+  VkDeviceQueueCreateInfo queue_create_info = {0};
+  queue_create_info.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
+  queue_create_info.queueFamilyIndex = indices.graphics_family.value;
+  queue_create_info.queueCount = 1;
+
+  float queue_priority = 1.0f;
+  queue_create_info.pQueuePriorities = &queue_priority;
+
+  VkPhysicalDeviceFeatures device_features = {0};
+
+  VkDeviceCreateInfo create_info = {0};
+  create_info.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
+  create_info.pQueueCreateInfos = &queue_create_info;
+  create_info.queueCreateInfoCount = 1;
+  create_info.pEnabledFeatures = &device_features;
+  create_info.enabledExtensionCount = 0;
+
+  // Redundant in modern vulkan, defined for backwards-compatibility
+  if (enable_validation_layers) {
+    create_info.enabledLayerCount =
+        sizeof(validation_layers) / sizeof(const char *);
+    create_info.ppEnabledLayerNames = validation_layers;
+  } else {
+    create_info.enabledLayerCount = 0;
+  }
+
+  if (vkCreateDevice(app->physical_device, &create_info, NULL, &app->device) !=
+      VK_SUCCESS) {
+    error("failed to create logical device!\n");
+  }
+
+  vkGetDeviceQueue(app->device, indices.graphics_family.value, 0,
+                   &app->graphics_queue);
+}
+
 /**********
  * Instance
  **********/
@@ -358,8 +406,6 @@ void create_instance(app_t *app) {
   for (uint32_t i = 0; i < available_extensions.count; i++) {
     printf("  %s\n", available_extensions.items[i].extensionName);
   }
-
-  const char *validation_layers[] = {"VK_LAYER_KHRONOS_validation"};
 
   char missing_layer[1024];
   if (enable_validation_layers &&
@@ -415,6 +461,7 @@ void init_vulkan(app_t *app) {
   create_instance(app);
   setup_debug_messenger(app);
   pick_physical_device(app);
+  create_logical_device(app);
 }
 
 void main_loop(app_t *app) {
@@ -424,6 +471,8 @@ void main_loop(app_t *app) {
 }
 
 void cleanup(app_t *app) {
+  vkDestroyDevice(app->device, NULL);
+
   if (enable_validation_layers) {
     destroy_debug_utils_messenger_ext(app->instance, app->debug_messenger,
                                       NULL);
