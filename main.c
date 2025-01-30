@@ -175,6 +175,8 @@ extension_names_da_t get_required_extensions() {
   }
 
   da_append(required_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+  da_append(required_extensions,
+            VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
 
   if (enable_validation_layers) {
     da_append(required_extensions, VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
@@ -366,7 +368,9 @@ void create_logical_device(app_t *app) {
   create_info.pQueueCreateInfos = &queue_create_info;
   create_info.queueCreateInfoCount = 1;
   create_info.pEnabledFeatures = &device_features;
-  create_info.enabledExtensionCount = 0;
+  create_info.enabledExtensionCount = 1;
+  create_info.ppEnabledExtensionNames =
+      (const char *[]){"VK_KHR_portability_subset"};
 
   // Redundant in modern vulkan, defined for backwards-compatibility
   if (enable_validation_layers) {
