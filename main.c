@@ -1,11 +1,10 @@
-#include "vulkan/vk_platform.h"
 #include "vulkan/vulkan_core.h"
+#define GLFW_INCLUDE_VULKAN
+
+#include <GLFW/glfw3.h>
 #include <assert.h>
 #include <float.h>
 #include <limits.h>
-#define GLFW_INCLUDE_VULKAN
-#include <GLFW/glfw3.h>
-
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,6 +44,12 @@ bool enable_validation_layers = false;
 #define clamp(val, floor, ceil) val > ceil ? ceil : (val < floor ? floor : val)
 
 typedef struct {
+  VkImage *items;
+  uint32_t count;
+  uint32_t capacity;
+} swapchain_images_da_t;
+
+typedef struct {
   GLFWwindow *window;
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
@@ -54,6 +59,9 @@ typedef struct {
   VkQueue present_queue;
   VkSurfaceKHR surface;
   VkSwapchainKHR swapchain;
+  swapchain_images_da_t swapchain_images;
+  VkFormat swapchain_image_format;
+  VkExtent2D swapchain_extent;
 } app_t;
 
 typedef struct {
@@ -360,7 +368,7 @@ VkExtent2D choose_swap_extent(app_t *app,
   return actual_extent;
 }
 
-void create_swap_chain(app_t *app) {
+void create_swapchain(app_t *app) {
   swapchain_support_details_t swap_chain_support =
       query_swap_chain_support(app, app->physical_device);
 
@@ -413,6 +421,15 @@ void create_swap_chain(app_t *app) {
       VK_SUCCESS) {
     error("failed to create swap chain!");
   }
+
+  vkGetSwapchainImagesKHR(app->device, app->swapchain, &image_count, NULL);
+  da_capacity(app->swapchain_images, image_count); // NOLINT
+  app->swapchain_images.count = image_count;
+  vkGetSwapchainImagesKHR(app->device, app->swapchain, &image_count,
+                          app->swapchain_images.items);
+
+  app->swapchain_extent = extent;
+  app->swapchain_image_format = surface_format.format;
 }
 
 /******************
@@ -698,6 +715,7 @@ void init_vulkan(app_t *app) {
   create_surface(app);
   pick_physical_device(app);
   create_logical_device(app);
+  create_swapchain(app);
 }
 
 void main_loop(app_t *app) {
