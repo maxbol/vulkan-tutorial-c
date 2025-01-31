@@ -50,6 +50,12 @@ typedef struct {
 } swapchain_images_da_t;
 
 typedef struct {
+  VkImageView *items;
+  uint32_t count;
+  uint32_t capacity;
+} swapchain_image_views_da_t;
+
+typedef struct {
   GLFWwindow *window;
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
@@ -62,6 +68,7 @@ typedef struct {
   swapchain_images_da_t swapchain_images;
   VkFormat swapchain_image_format;
   VkExtent2D swapchain_extent;
+  swapchain_image_views_da_t swapchain_image_views;
 } app_t;
 
 typedef struct {
@@ -432,6 +439,37 @@ void create_swapchain(app_t *app) {
   app->swapchain_image_format = surface_format.format;
 }
 
+/*************
+ * Image views
+ *************/
+
+void create_image_views(app_t *app) {
+  app->swapchain_image_views = (swapchain_image_views_da_t){0};
+  da_capacity(app->swapchain_image_views, app->swapchain_images.count);
+
+  for (size_t i = 0; i < app->swapchain_images.count; i++) {
+    VkImageViewCreateInfo create_info = {0};
+    create_info.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
+    create_info.image = app->swapchain_images.items[i];
+    create_info.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    create_info.format = app->swapchain_image_format;
+    create_info.components.r = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.g = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.b = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.components.a = VK_COMPONENT_SWIZZLE_IDENTITY;
+    create_info.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
+    create_info.subresourceRange.baseMipLevel = 0;
+    create_info.subresourceRange.levelCount = 1;
+    create_info.subresourceRange.baseArrayLayer = 0;
+    create_info.subresourceRange.layerCount = 1;
+
+    if (vkCreateImageView(app->device, &create_info, NULL,
+                          &app->swapchain_image_views.items[i]) != VK_SUCCESS) {
+      error("failed to create image views!");
+    }
+  }
+}
+
 /******************
  * Physical devices
  ******************/
@@ -716,6 +754,7 @@ void init_vulkan(app_t *app) {
   pick_physical_device(app);
   create_logical_device(app);
   create_swapchain(app);
+  create_image_views(app);
 }
 
 void main_loop(app_t *app) {
@@ -725,6 +764,10 @@ void main_loop(app_t *app) {
 }
 
 void cleanup(app_t *app) {
+  for (uint32_t i = 0; i < app->swapchain_image_views.count; i++) {
+    vkDestroyImageView(app->device, app->swapchain_image_views.items[i], NULL);
+  }
+
   vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
   vkDestroyDevice(app->device, NULL);
 
