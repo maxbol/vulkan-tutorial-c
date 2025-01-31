@@ -1,6 +1,8 @@
 #include "vulkan/vk_platform.h"
 #include "vulkan/vulkan_core.h"
 #include <assert.h>
+#include <float.h>
+#include <limits.h>
 #define GLFW_INCLUDE_VULKAN
 #include <GLFW/glfw3.h>
 
@@ -40,6 +42,8 @@ bool enable_validation_layers = false;
     exit(EXIT_FAILURE);                                                        \
   }
 
+#define clamp(val, floor, ceil) val > ceil ? ceil : (val < floor ? floor : val)
+
 typedef struct {
   GLFWwindow *window;
   VkInstance instance;
@@ -49,6 +53,7 @@ typedef struct {
   VkQueue graphics_queue;
   VkQueue present_queue;
   VkSurfaceKHR surface;
+  VkSwapchainKHR swapchain;
 } app_t;
 
 typedef struct {
@@ -277,7 +282,7 @@ typedef struct {
 } present_modes_da_t;
 
 typedef struct {
-  VkSurfaceCapabilitiesKHR capabilites;
+  VkSurfaceCapabilitiesKHR capabilities;
   surface_formats_da_t formats;
   present_modes_da_t present_modes;
 } swapchain_support_details_t;
@@ -287,7 +292,7 @@ swapchain_support_details_t query_swap_chain_support(app_t *app,
   swapchain_support_details_t details = {0};
 
   vkGetPhysicalDeviceSurfaceCapabilitiesKHR(device, app->surface,
-                                            &details.capabilites);
+                                            &details.capabilities);
 
   vkGetPhysicalDeviceSurfaceFormatsKHR(device, app->surface,
                                        &details.formats.count, NULL);
@@ -309,6 +314,105 @@ swapchain_support_details_t query_swap_chain_support(app_t *app,
   }
 
   return details;
+}
+
+VkSurfaceFormatKHR choose_swap_surface_format(surface_formats_da_t formats) {
+
+  for (uint32_t i = 0; i < formats.count; i++) {
+    VkSurfaceFormatKHR format = formats.items[i];
+    if (format.format == VK_FORMAT_B8G8R8A8_SRGB &&
+        format.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) {
+      return format;
+    }
+  }
+
+  return formats.items[0];
+}
+
+VkPresentModeKHR choose_swap_present_mode(present_modes_da_t present_modes) {
+  for (uint32_t i = 0; i < present_modes.count; i++) {
+    VkPresentModeKHR present_mode = present_modes.items[i];
+    if (present_mode == VK_PRESENT_MODE_MAILBOX_KHR) {
+      return present_mode;
+    }
+  }
+  return VK_PRESENT_MODE_FIFO_KHR;
+}
+
+VkExtent2D choose_swap_extent(app_t *app,
+                              const VkSurfaceCapabilitiesKHR capabilities) {
+  if (capabilities.currentExtent.width != UINT_MAX) {
+    return capabilities.currentExtent;
+  }
+
+  int width, height;
+  glfwGetFramebufferSize(app->window, &width, &height);
+
+  VkExtent2D actual_extent = {(uint32_t)width, (uint32_t)height};
+
+  actual_extent.width =
+      clamp(actual_extent.width, capabilities.minImageExtent.width,
+            capabilities.maxImageExtent.width);
+  actual_extent.height =
+      clamp(actual_extent.height, capabilities.minImageExtent.height,
+            capabilities.maxImageExtent.width);
+
+  return actual_extent;
+}
+
+void create_swap_chain(app_t *app) {
+  swapchain_support_details_t swap_chain_support =
+      query_swap_chain_support(app, app->physical_device);
+
+  VkSurfaceFormatKHR surface_format =
+      choose_swap_surface_format(swap_chain_support.formats);
+  VkPresentModeKHR present_mode =
+      choose_swap_present_mode(swap_chain_support.present_modes);
+  VkExtent2D extent = choose_swap_extent(app, swap_chain_support.capabilities);
+
+  uint32_t image_count = swap_chain_support.capabilities.minImageCount + 1;
+
+  if (swap_chain_support.capabilities.maxImageCount > 0 &&
+      image_count > swap_chain_support.capabilities.maxImageCount) {
+    image_count = swap_chain_support.capabilities.maxImageCount;
+  }
+
+  VkSwapchainCreateInfoKHR create_info = {0};
+  create_info.sType = VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR;
+  create_info.surface = app->surface;
+  create_info.minImageCount = image_count;
+  create_info.imageFormat = surface_format.format;
+  create_info.imageColorSpace = surface_format.colorSpace;
+  create_info.imageExtent = extent;
+  create_info.imageArrayLayers = 1;
+  create_info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+
+  queue_family_indices_t indices =
+      find_queue_families(app, app->physical_device);
+
+  uint32_t queue_family_indices[] = {indices.graphics_family.value,
+                                     indices.present_family.value};
+
+  if (indices.graphics_family.value != indices.present_family.value) {
+    create_info.imageSharingMode = VK_SHARING_MODE_CONCURRENT;
+    create_info.queueFamilyIndexCount = 2;
+    create_info.pQueueFamilyIndices = queue_family_indices;
+  } else {
+    create_info.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    create_info.queueFamilyIndexCount = 0;
+    create_info.pQueueFamilyIndices = NULL;
+  }
+
+  create_info.preTransform = swap_chain_support.capabilities.currentTransform;
+  create_info.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
+  create_info.presentMode = present_mode;
+  create_info.clipped = VK_TRUE;
+  create_info.oldSwapchain = VK_NULL_HANDLE;
+
+  if (vkCreateSwapchainKHR(app->device, &create_info, NULL, &app->swapchain) !=
+      VK_SUCCESS) {
+    error("failed to create swap chain!");
+  }
 }
 
 /******************
@@ -603,6 +707,7 @@ void main_loop(app_t *app) {
 }
 
 void cleanup(app_t *app) {
+  vkDestroySwapchainKHR(app->device, app->swapchain, NULL);
   vkDestroyDevice(app->device, NULL);
 
   if (enable_validation_layers) {
