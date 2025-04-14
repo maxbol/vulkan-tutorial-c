@@ -1,0 +1,6 @@
+[submodule "rapidhash"]
+	path = rapidhash
+	url = git@github.com:Nicoshev/rapidhash.git
+[submodule "set.h"]
+	path = set.h
+	url = git@github.com:maxbol/set.h.git

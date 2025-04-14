@@ -37,6 +37,7 @@
           vulkan-utility-libraries
           glfw-vulkan-macos-fix
           cglm
+          shaderc
         ];
 
         nativeBuildInputs = [
