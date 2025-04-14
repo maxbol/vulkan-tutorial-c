@@ -1,3 +1,4 @@
+#include "vk_video/vulkan_video_codec_av1std.h"
 #include "vulkan/vulkan_core.h"
 #define GLFW_INCLUDE_VULKAN
 
@@ -58,6 +59,12 @@ typedef struct {
 } swapchain_image_views_da_t;
 
 typedef struct {
+  VkFramebuffer *items;
+  uint32_t count;
+  uint32_t capacity;
+} swapchain_frame_buffers_da_t;
+
+typedef struct {
   GLFWwindow *window;
   VkInstance instance;
   VkDebugUtilsMessengerEXT debug_messenger;
@@ -74,6 +81,12 @@ typedef struct {
   VkPipelineLayout pipeline_layout;
   VkRenderPass render_pass;
   VkPipeline graphics_pipeline;
+  swapchain_frame_buffers_da_t swapchain_frame_buffers;
+  VkCommandPool command_pool;
+  VkCommandBuffer command_buffer;
+  VkSemaphore image_available_semaphore;
+  VkSemaphore render_finished_semaphore;
+  VkFence in_flight_fence;
 } app_t;
 
 typedef struct {
@@ -527,12 +540,22 @@ void create_render_pass(app_t *app) {
   subpass.colorAttachmentCount = 1;
   subpass.pColorAttachments = &color_attachment_ref;
 
+  VkSubpassDependency dependency = {0};
+  dependency.srcSubpass = VK_SUBPASS_EXTERNAL;
+  dependency.dstSubpass = 0;
+  dependency.srcStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependency.srcAccessMask = 0;
+  dependency.dstStageMask = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
+  dependency.dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
+
   VkRenderPassCreateInfo render_pass_info = {0};
   render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO;
   render_pass_info.attachmentCount = 1;
   render_pass_info.pAttachments = &color_attachment;
   render_pass_info.subpassCount = 1;
   render_pass_info.pSubpasses = &subpass;
+  render_pass_info.dependencyCount = 1;
+  render_pass_info.pDependencies = &dependency;
 
   if (vkCreateRenderPass(app->device, &render_pass_info, NULL,
                          &app->render_pass) != VK_SUCCESS) {
@@ -719,6 +742,139 @@ void create_graphics_pipeline(app_t *app) {
 
   vkDestroyShaderModule(app->device, vert_shader_module, NULL);
   vkDestroyShaderModule(app->device, frag_shader_module, NULL);
+}
+
+/**************
+ * Framebuffers
+ **************/
+
+void create_frame_buffers(app_t *app) {
+  da_capacity(app->swapchain_frame_buffers, app->swapchain_image_views.count);
+  app->swapchain_frame_buffers.count = app->swapchain_image_views.count;
+
+  for (size_t i = 0; i < app->swapchain_image_views.count; i++) {
+    VkImageView attachments[] = {app->swapchain_image_views.items[i]};
+
+    VkFramebufferCreateInfo framebuffer_info = {0};
+    framebuffer_info.sType = VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO;
+    framebuffer_info.renderPass = app->render_pass;
+    framebuffer_info.attachmentCount = 1;
+    framebuffer_info.pAttachments = attachments;
+    framebuffer_info.width = app->swapchain_extent.width;
+    framebuffer_info.height = app->swapchain_extent.height;
+    framebuffer_info.layers = 1;
+
+    if (vkCreateFramebuffer(app->device, &framebuffer_info, NULL,
+                            &app->swapchain_frame_buffers.items[i]) !=
+        VK_SUCCESS) {
+      error("failed to create framebuffer!");
+    }
+  }
+}
+
+/***********************
+ * Command pool & buffer
+ ***********************/
+
+void create_command_pool(app_t *app) {
+  queue_family_indices_t queue_family_indices =
+      find_queue_families(app, app->physical_device);
+
+  VkCommandPoolCreateInfo pool_info = {0};
+  pool_info.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+  pool_info.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
+  pool_info.queueFamilyIndex = queue_family_indices.graphics_family.value;
+
+  if (vkCreateCommandPool(app->device, &pool_info, NULL, &app->command_pool) !=
+      VK_SUCCESS) {
+    error("failed to create command pool!");
+  }
+}
+
+void create_command_buffer(app_t *app) {
+  VkCommandBufferAllocateInfo alloc_info = {0};
+  alloc_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+  alloc_info.commandPool = app->command_pool;
+  alloc_info.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+  alloc_info.commandBufferCount = 1;
+
+  if (vkAllocateCommandBuffers(app->device, &alloc_info,
+                               &app->command_buffer) != VK_SUCCESS) {
+    error("failed to allocate command buffers!");
+  }
+}
+
+void record_command_buffer(app_t *app, VkCommandBuffer command_buffer,
+                           uint32_t image_index) {
+  VkCommandBufferBeginInfo begin_info = {0};
+  begin_info.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+  begin_info.flags = 0;
+  begin_info.pInheritanceInfo = NULL;
+
+  if (vkBeginCommandBuffer(command_buffer, &begin_info) != VK_SUCCESS) {
+    error("failed to begin recording command buffer!");
+  }
+
+  VkRenderPassBeginInfo render_pass_info = {0};
+  render_pass_info.sType = VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO;
+  render_pass_info.renderPass = app->render_pass;
+  render_pass_info.framebuffer =
+      app->swapchain_frame_buffers.items[image_index];
+  render_pass_info.renderArea.offset = (VkOffset2D){0, 0};
+  render_pass_info.renderArea.extent = app->swapchain_extent;
+
+  VkClearValue clear_color = {{{0.0f, 0.0f, 0.0f, 1.0f}}};
+  render_pass_info.clearValueCount = 1;
+  render_pass_info.pClearValues = &clear_color;
+
+  vkCmdBeginRenderPass(command_buffer, &render_pass_info,
+                       VK_SUBPASS_CONTENTS_INLINE);
+  vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                    app->graphics_pipeline);
+
+  VkViewport viewport = {0};
+  viewport.x = 0.0f;
+  viewport.y = 1.0f;
+  viewport.width = (float)app->swapchain_extent.width;
+  viewport.height = (float)app->swapchain_extent.height;
+  viewport.minDepth = 0.0f;
+  viewport.maxDepth = 1.0f;
+  vkCmdSetViewport(command_buffer, 0, 1, &viewport);
+
+  VkRect2D scissor = {0};
+  scissor.offset = (VkOffset2D){0, 0};
+  scissor.extent = app->swapchain_extent;
+  vkCmdSetScissor(command_buffer, 0, 1, &scissor);
+
+  vkCmdDraw(command_buffer, 3, 1, 0, 0);
+
+  vkCmdEndRenderPass(command_buffer);
+
+  if (vkEndCommandBuffer(command_buffer) != VK_SUCCESS) {
+    error("failed to record command buffer!");
+  }
+}
+
+/**************
+ * Sync objects
+ **************/
+
+void create_sync_objects(app_t *app) {
+  VkSemaphoreCreateInfo semaphore_info = {0};
+  semaphore_info.sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO;
+
+  VkFenceCreateInfo fence_info = {0};
+  fence_info.sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO;
+  fence_info.flags = VK_FENCE_CREATE_SIGNALED_BIT;
+
+  if (vkCreateSemaphore(app->device, &semaphore_info, NULL,
+                        &app->image_available_semaphore) != VK_SUCCESS ||
+      vkCreateSemaphore(app->device, &semaphore_info, NULL,
+                        &app->render_finished_semaphore) != VK_SUCCESS ||
+      vkCreateFence(app->device, &fence_info, NULL, &app->in_flight_fence) !=
+          VK_SUCCESS) {
+    error("failed to create semaphores!");
+  }
 }
 
 /******************
@@ -1022,15 +1178,84 @@ void init_vulkan(app_t *app) {
   create_image_views(app);
   create_render_pass(app);
   create_graphics_pipeline(app);
+  create_frame_buffers(app);
+  create_command_pool(app);
+  create_command_buffer(app);
+  create_sync_objects(app);
+}
+
+void draw_frame(app_t *app) {
+  vkWaitForFences(app->device, 1, &app->in_flight_fence, VK_TRUE, UINT64_MAX);
+  vkResetFences(app->device, 1, &app->in_flight_fence);
+
+  uint32_t image_index;
+  vkAcquireNextImageKHR(app->device, app->swapchain, UINT64_MAX,
+                        app->image_available_semaphore, VK_NULL_HANDLE,
+                        &image_index);
+
+  vkResetCommandBuffer(app->command_buffer, 0);
+  record_command_buffer(app, app->command_buffer, image_index);
+
+  VkSubmitInfo submit_info = {0};
+  submit_info.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO;
+
+  VkSemaphore wait_semaphores[] = {app->image_available_semaphore};
+
+  VkPipelineStageFlags wait_stages[] = {
+      VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
+
+  submit_info.waitSemaphoreCount = 1;
+  submit_info.pWaitSemaphores = wait_semaphores;
+  submit_info.pWaitDstStageMask = wait_stages;
+
+  submit_info.commandBufferCount = 1;
+  submit_info.pCommandBuffers = &app->command_buffer;
+
+  VkSemaphore signal_sempahores[] = {app->render_finished_semaphore};
+  submit_info.signalSemaphoreCount = 1;
+  submit_info.pSignalSemaphores = signal_sempahores;
+
+  if (vkQueueSubmit(app->graphics_queue, 1, &submit_info,
+                    app->in_flight_fence) != VK_SUCCESS) {
+    error("failed to submit draw command buffer");
+  }
+
+  VkPresentInfoKHR present_info = {0};
+  present_info.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;
+  present_info.waitSemaphoreCount = 1;
+  present_info.pWaitSemaphores = signal_sempahores;
+
+  VkSwapchainKHR swap_chains[] = {app->swapchain};
+  present_info.swapchainCount = 1;
+  present_info.pSwapchains = swap_chains;
+  present_info.pImageIndices = &image_index;
+  present_info.pResults = NULL;
+
+  vkQueuePresentKHR(app->present_queue, &present_info);
 }
 
 void main_loop(app_t *app) {
   while (!glfwWindowShouldClose(app->window)) {
     glfwPollEvents();
+    draw_frame(app);
   }
+
+  vkDeviceWaitIdle(app->device);
 }
 
 void cleanup(app_t *app) {
+  vkDestroySemaphore(app->device, app->image_available_semaphore, NULL);
+  vkDestroySemaphore(app->device, app->render_finished_semaphore, NULL);
+  vkDestroyFence(app->device, app->in_flight_fence, NULL);
+
+  vkDestroyCommandPool(app->device, app->command_pool, NULL);
+
+  for (size_t i = 0; i < app->swapchain_frame_buffers.count; i++) {
+    printf("Destroying framebuffer %d\n", i);
+    vkDestroyFramebuffer(app->device, app->swapchain_frame_buffers.items[i],
+                         NULL);
+  }
+
   vkDestroyPipeline(app->device, app->graphics_pipeline, NULL);
   vkDestroyPipelineLayout(app->device, app->pipeline_layout, NULL);
   vkDestroyRenderPass(app->device, app->render_pass, NULL);
