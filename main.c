@@ -1,10 +1,8 @@
-#include "vk_video/vulkan_video_codec_av1std.h"
 #include "vulkan/vulkan_core.h"
 #define GLFW_INCLUDE_VULKAN
 
 #include <GLFW/glfw3.h>
 #include <assert.h>
-#include <float.h>
 #include <limits.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -247,7 +245,10 @@ const_strings_da_t get_required_instance_extensions() {
     da_append(required_extensions, glfw_extensions[i]);
   }
 
+#ifdef __APPLE__
   da_append(required_extensions, VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
+#endif
+
   da_append(required_extensions,
             VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME);
   da_append(required_extensions, VK_KHR_SURFACE_EXTENSION_NAME);
@@ -1049,7 +1050,10 @@ void create_logical_device(app_t *app) {
   VkPhysicalDeviceFeatures device_features = {0};
 
   const_strings_da_t enabled_extensions = {0};
+
+#ifdef __APPLE__
   da_append(enabled_extensions, "VK_KHR_portability_subset");
+#endif
 
   for (uint32_t i = 0; i < sizeof(device_extensions) / sizeof(const char *);
        i++) {
@@ -1119,7 +1123,10 @@ void create_instance(app_t *app) {
   create_info.pApplicationInfo = &app_info;
   create_info.enabledExtensionCount = (uint32_t)required_extensions.count;
   create_info.ppEnabledExtensionNames = required_extensions.items;
+
+#ifdef __APPLE__
   create_info.flags |= VK_INSTANCE_CREATE_ENUMERATE_PORTABILITY_BIT_KHR;
+#endif
 
   VkDebugUtilsMessengerCreateInfoEXT debug_create_info;
   if (enable_validation_layers) {

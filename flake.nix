@@ -28,17 +28,27 @@
               ];
             };
           });
-        in [
-          vulkan-headers
-          vulkan-loader
-          vulkan-validation-layers
-          moltenvk
-          vulkan-tools
-          vulkan-utility-libraries
-          glfw-vulkan-macos-fix
-          cglm
-          shaderc
-        ];
+        in
+          [
+            vulkan-headers
+            vulkan-loader
+            vulkan-validation-layers
+            vulkan-tools
+            vulkan-utility-libraries
+            cglm
+            shaderc
+          ]
+          ++ (
+            lib.optionals (pkgs.stdenv.hostPlatform.isDarwin) [
+              moltenvk
+              glfw-vulkan-macos-fix
+            ]
+          )
+          ++ (
+            lib.optionals (pkgs.stdenv.hostPlatform.isLinux) [
+              glfw
+            ]
+          );
 
         nativeBuildInputs = [
           pkg-config
@@ -47,13 +57,17 @@
 
         packages = [
           clang-tools
+          clang
           # llvm_17
           # lldb_17
           bear
         ];
 
         VK_LAYER_PATH = "${vulkan-validation-layers}/share/vulkan/explicit_layer.d";
-        VK_ICD_FILENAMES = "${moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json";
+        VK_ICD_FILENAMES =
+          if pkgs.stdenv.hostPlatform.isDarwin
+          then "${moltenvk}/share/vulkan/icd.d/MoltenVK_icd.json"
+          else null;
       };
     };
   }));
